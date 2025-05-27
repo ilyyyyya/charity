@@ -11,14 +11,28 @@ export const FundReports: React.FC<FundReportsProps> = ({ fundId }) => {
     const [reports, setReports] = useState<FundReport[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
-    const [selectedPhoto, setSelectedPhoto] = useState<{ url: string; index: number; reportId: number } | null>(null);
-    const [showInfo, setShowInfo] = useState(false);
+    const [selectedPhoto, setSelectedPhoto] = useState<{ url: string | null; index: number; reportId: number } | null>(null);
+    // const [showInfo, setShowInfo] = useState(false);
     const [photoLoading, setPhotoLoading] = useState(false);
     const [preloadedPhotos, setPreloadedPhotos] = useState<Set<string>>(new Set());
+    const [photoBlobs, setPhotoBlobs] = useState<Record<string, string>>({});
 
     useEffect(() => {
         loadReports();
     }, [fundId]);
+
+    useEffect(() => {
+        if (reports.length > 0) {
+            reports.forEach(report => {
+                report.photos.forEach(photo => {
+                    const photoKey = `${report.id}-${photo.id}`;
+                    if (!photoBlobs[photoKey]) {
+                        loadPhoto(report.id, photo.id);
+                    }
+                });
+            });
+        }
+    }, [reports]);
 
     const loadReports = async () => {
         try {
@@ -49,34 +63,67 @@ export const FundReports: React.FC<FundReportsProps> = ({ fundId }) => {
             minimumFractionDigits: 2
         }).format(amount);
     };
-
-    const preloadPhoto = useCallback((url: string) => {
+    useCallback((url: string) => {
         if (preloadedPhotos.has(url)) return;
-        
+
         const img = new Image();
         img.src = url;
         img.onload = () => {
             setPreloadedPhotos(prev => new Set([...prev, url]));
         };
     }, [preloadedPhotos]);
-
-    const handlePhotoClick = (reportId: number, photoId: number, index: number) => {
-        const url = `${api.defaults.baseURL}/api/funds/${fundId}/reports/${reportId}/photos/${photoId}`;
-        setPhotoLoading(true);
-        setSelectedPhoto({ url, index, reportId });
-        
-        // Предзагрузка следующей и предыдущей фотографий
-        const currentReport = reports.find(r => r.id === reportId);
-        if (currentReport) {
-            if (index > 0) {
-                const prevPhoto = currentReport.photos[index - 1];
-                preloadPhoto(`${api.defaults.baseURL}/api/funds/${fundId}/reports/${reportId}/photos/${prevPhoto.id}`);
-            }
-            if (index < currentReport.photos.length - 1) {
-                const nextPhoto = currentReport.photos[index + 1];
-                preloadPhoto(`${api.defaults.baseURL}/api/funds/${fundId}/reports/${reportId}/photos/${nextPhoto.id}`);
-            }
+    const loadPhoto = async (reportId: number, photoId: number) => {
+        try {
+            const response = await api.get(`/api/funds/${fundId}/reports/${reportId}/photos/${photoId}`, {
+                responseType: 'blob'
+            });
+            const blob = response.data;
+            const url = URL.createObjectURL(blob);
+            setPhotoBlobs(prev => ({
+                ...prev,
+                [`${reportId}-${photoId}`]: url
+            }));
+            return url;
+        } catch (err) {
+            console.error('Ошибка при загрузке фото:', err);
+            return null;
         }
+    };
+
+    const handlePhotoClick = async (reportId: number, photoId: number, index: number) => {
+        setPhotoLoading(true);
+        const photoKey = `${reportId}-${photoId}`;
+        let photoUrl: string | null = photoBlobs[photoKey];
+        
+        if (!photoUrl) {
+            photoUrl = await loadPhoto(reportId, photoId);
+        }
+        
+        if (photoUrl) {
+            setSelectedPhoto({ url: photoUrl, index, reportId });
+            
+            // Предзагрузка следующей и предыдущей фотографий
+            const currentReport = reports.find(r => r.id === reportId);
+            if (currentReport) {
+                if (index > 0) {
+                    const prevPhoto = currentReport.photos[index - 1];
+                    const prevPhotoKey = `${reportId}-${prevPhoto.id}`;
+                    if (!photoBlobs[prevPhotoKey]) {
+                        loadPhoto(reportId, prevPhoto.id);
+                    }
+                }
+                if (index < currentReport.photos.length - 1) {
+                    const nextPhoto = currentReport.photos[index + 1];
+                    const nextPhotoKey = `${reportId}-${nextPhoto.id}`;
+                    if (!photoBlobs[nextPhotoKey]) {
+                        loadPhoto(reportId, nextPhoto.id);
+                    }
+                }
+            }
+        } else {
+            setError('Не удалось загрузить фотографию');
+        }
+        setPhotoLoading(false);
     };
 
     const handleNextPhoto = () => {
@@ -103,8 +150,10 @@ export const FundReports: React.FC<FundReportsProps> = ({ fundId }) => {
 
     const handleDownloadPhoto = async (url: string, fileName: string) => {
         try {
-            const response = await fetch(url);
-            const blob = await response.blob();
+            const response = await api.get(url, {
+                responseType: 'blob'
+            });
+            const blob = response.data;
             const downloadUrl = window.URL.createObjectURL(blob);
             const link = document.createElement('a');
             link.href = downloadUrl;
@@ -215,25 +264,35 @@ export const FundReports: React.FC<FundReportsProps> = ({ fundId }) => {
                                     Фотографии
                                 </h4>
                                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                                    {report.photos.map((photo, index) => (
-                                        <div
-                                            key={photo.id}
-                                            className="relative aspect-square cursor-pointer group"
-                                            onClick={() => handlePhotoClick(report.id, photo.id, index)}
-                                        >
-                                            <img
-                                                src={`${api.defaults.baseURL}/api/funds/${report.fundId}/reports/${report.id}/photos/${photo.id}`}
-                                                alt={`Фото ${index + 1}`}
-                                                className="w-full h-full object-cover rounded-lg transition-all duration-300 group-hover:scale-105"
-                                            />
-                                            <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 transition-all duration-300 rounded-lg"></div>
-                                            <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300">
-                                                <div className="bg-white bg-opacity-90 rounded-full p-2">
-                                                    <Info size={20} className="text-gray-700" />
+                                    {report.photos.map((photo, index) => {
+                                        const photoKey = `${report.id}-${photo.id}`;
+                                        const photoUrl = photoBlobs[photoKey];
+                                        return (
+                                            <div
+                                                key={photo.id}
+                                                className="relative aspect-square cursor-pointer group"
+                                                onClick={() => handlePhotoClick(report.id, photo.id, index)}
+                                            >
+                                                {photoUrl ? (
+                                                    <img
+                                                        src={photoUrl}
+                                                        alt={`Фото ${index + 1}`}
+                                                        className="w-full h-full object-cover rounded-lg transition-all duration-300 group-hover:scale-105"
+                                                    />
+                                                ) : (
+                                                    <div className="w-full h-full bg-gray-100 rounded-lg flex items-center justify-center">
+                                                        <Loader2 size={24} className="text-gray-400 animate-spin" />
+                                                    </div>
+                                                )}
+                                                <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 transition-all duration-300 rounded-lg"></div>
+                                                <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+                                                    <div className="bg-white bg-opacity-90 rounded-full p-2">
+                                                        <Info size={20} className="text-gray-700" />
+                                                    </div>
                                                 </div>
                                             </div>
-                                        </div>
-                                    ))}
+                                        );
+                                    })}
                                 </div>
                             </div>
                         )}
